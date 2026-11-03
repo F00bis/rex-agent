@@ -85,10 +85,22 @@ func (a *Agent) Run(ctx context.Context) error {
 			ticker := time.NewTicker(16 * time.Millisecond)
 			defer ticker.Stop()
 
+			frames := []string{"|", "/", "-", "\\"}
+			frame := 0
+			started := false
+
+			spinnerTicker := time.NewTicker(64 * time.Millisecond)
+			defer spinnerTicker.Stop()
+
 			var pending []rune
 
 			for chunks != nil || len(pending) > 0 {
 				select {
+				case <-spinnerTicker.C:
+					if !started {
+						fmt.Printf("\r%s Thinking...", frames[frame])
+						frame = (frame + 1) % len(frames)
+					}
 				case delta, ok := <-chunks:
 					if !ok {
 						chunks = nil
@@ -98,6 +110,11 @@ func (a *Agent) Run(ctx context.Context) error {
 				case <-ticker.C:
 					n := min(2, len(pending))
 					if n > 0 {
+						if !started {
+							spinnerTicker.Stop()
+							fmt.Print("\r\x1b[2K")
+							started = true
+						}
 						fmt.Print(string(pending[:n]))
 						pending = pending[n:]
 					}
@@ -142,7 +159,6 @@ func (a *Agent) RunInference(ctx context.Context, conversation []components.Chat
 
 	if err != nil {
 		return components.ChatAssistantMessage{}, fmt.Errorf("Error on inference start: %w", err)
-
 	}
 
 	if res == nil || res.EventStream == nil {
@@ -164,7 +180,7 @@ func (a *Agent) RunInference(ctx context.Context, conversation []components.Chat
 		chunk := event.Data
 
 		if chunk.Error != nil {
-			return components.ChatAssistantMessage{}, fmt.Errorf("Error from provider: %w", chunk.Error.Message)
+			return components.ChatAssistantMessage{}, fmt.Errorf("Error from provider: %s", chunk.Error.Message)
 		}
 
 		for _, choice := range chunk.Choices {
