@@ -1,0 +1,22 @@
+{
+  "type": "function",
+  "function": {
+    "name": "glob",
+    "description": "lists file names that match a given glob pattern",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "The path of the directory to list files"
+        },
+        "pattern": {
+          "type": "string",
+          "description": "the glob pattern to match files against"
+        }
+      },
+      "required": ["path", "pattern"],
+      "additionalProperties": false
+    }
+  }
+}

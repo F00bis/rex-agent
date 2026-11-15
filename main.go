@@ -43,6 +43,14 @@ func main() {
 
 	agent := NewAgent(*client, getUserInput, modelName, *verbose)
 
+	var tools []Tool
+
+	glob, _ := NewTool("./tools/glob.json", HandleGlob)
+
+	tools = append(tools, glob)
+
+	agent.AddTools(tools)
+
 	err := agent.Run(ctx)
 
 	if err != nil {

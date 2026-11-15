@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -16,6 +17,8 @@ type Agent struct {
 	model        string
 	getUserInput func() (string, bool)
 	verbose      bool
+	definitions  []components.ChatFunctionTool
+	handlers     map[string]func(context.Context, json.RawMessage) (string, error)
 }
 
 func NewAgent(client openrouter.OpenRouter, getUserMessage func() (string, bool), model string, verbose bool) *Agent {
@@ -24,6 +27,15 @@ func NewAgent(client openrouter.OpenRouter, getUserMessage func() (string, bool)
 		getUserInput: getUserMessage,
 		model:        model,
 		verbose:      verbose,
+	}
+}
+
+func (a *Agent) AddTools(tools []Tool) {
+	a.definitions = make([]components.ChatFunctionTool, 0, len(tools))
+	a.handlers = make(map[string]func(context.Context, json.RawMessage) (string, error), len(tools))
+	for _, tool := range tools {
+		a.definitions = append(a.definitions, tool.Definition)
+		a.handlers[tool.Definition.ChatFunctionToolFunction.Function.Name] = tool.Execute
 	}
 }
 
@@ -128,7 +140,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			chunks <- delta
 		}
 
-		message, err := a.RunInference(ctx, conversation, onDelta)
+		nextConversation, err := a.RunTurn(ctx, conversation, onDelta)
 		close(chunks)
 		<-done
 		fmt.Println()
@@ -140,7 +152,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			return err
 		}
 
-		conversation = append(conversation, components.CreateChatMessagesAssistant(message))
+		conversation = nextConversation
 	}
 
 	if a.verbose {
@@ -155,6 +167,7 @@ func (a *Agent) RunInference(ctx context.Context, conversation []components.Chat
 		Model:    &a.model,
 		Messages: conversation,
 		Stream:   new(true),
+		Tools:    a.definitions,
 	}, nil)
 
 	if err != nil {
@@ -169,6 +182,8 @@ func (a *Agent) RunInference(ctx context.Context, conversation []components.Chat
 	defer stream.Close()
 
 	var text strings.Builder
+	var calls []components.ChatToolCall
+	positions := make(map[int64]int)
 
 	for stream.Next() {
 		event := stream.Value()
@@ -188,20 +203,40 @@ func (a *Agent) RunInference(ctx context.Context, conversation []components.Chat
 				continue
 			}
 
-			delta, ok := choice.Delta.Content.Get()
+			if delta, ok := choice.Delta.Content.Get(); ok && delta != nil {
+				text.WriteString(*delta)
 
-			if !ok || delta == nil {
-				if a.verbose {
-					log.Printf("Error in chunk delta at chunk index %d", choice.Index)
+				if onDelta != nil {
+					onDelta(*delta)
 				}
-
-				continue
 			}
 
-			text.WriteString(*delta)
+			for _, delta := range choice.Delta.ToolCalls {
+				pos, exists := positions[delta.Index]
 
-			if onDelta != nil {
-				onDelta(*delta)
+				if !exists {
+					pos = len(calls)
+					positions[delta.Index] = pos
+					calls = append(calls, components.ChatToolCall{
+						Type: components.ChatToolCallTypeFunction,
+					})
+				}
+
+				call := &calls[pos]
+
+				if delta.ID != nil {
+					call.ID = *delta.ID
+				}
+
+				if delta.Function != nil {
+					if delta.Function.Name != nil {
+						call.Function.Name += *delta.Function.Name
+					}
+
+					if delta.Function.Arguments != nil {
+						call.Function.Arguments += *delta.Function.Arguments
+					}
+				}
 			}
 		}
 	}
@@ -211,11 +246,69 @@ func (a *Agent) RunInference(ctx context.Context, conversation []components.Chat
 	}
 
 	message := components.ChatAssistantMessage{
-		Role: components.ChatAssistantMessageRoleAssistant,
+		Role:      components.ChatAssistantMessageRoleAssistant,
+		ToolCalls: calls,
 	}
 
-	content := components.CreateChatAssistantMessageContentStr(text.String())
-	message.Content.Set(&content)
+	if text.Len() > 0 {
+		content := components.CreateChatAssistantMessageContentStr(text.String())
+		message.Content.Set(&content)
+	}
 
 	return message, nil
+}
+
+func (a *Agent) RunTurn(ctx context.Context, conversation []components.ChatMessages, onDelta func(string)) ([]components.ChatMessages, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		message, err := a.RunInference(ctx, conversation, onDelta)
+
+		if err != nil {
+			return nil, err
+		}
+
+		conversation = append(conversation, components.CreateChatMessagesAssistant(message))
+
+		if len(message.ToolCalls) == 0 {
+			return conversation, nil
+		}
+
+		for _, call := range message.ToolCalls {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+
+			handler, exists := a.handlers[call.Function.Name]
+
+			var result string
+
+			switch {
+			case !exists || handler == nil:
+				result = fmt.Sprintf("Tool error: unknown tool %q", call.Function.Name)
+			case !json.Valid([]byte(call.Function.Arguments)):
+				result = "Tool error: arguments must be valid JSON"
+			default:
+				output, err := handler(ctx, json.RawMessage(call.Function.Arguments))
+
+				if err != nil {
+					result = fmt.Sprintf("Tool error: %v", err)
+				} else {
+					result = output
+				}
+			}
+
+			toolMessage := components.CreateChatMessagesTool(
+				components.ChatToolMessage{
+					Role:       components.ChatToolMessageRoleTool,
+					ToolCallID: call.ID,
+					Content:    components.CreateChatToolMessageContentStr(result),
+				},
+			)
+
+			conversation = append(conversation, toolMessage)
+		}
+	}
 }
