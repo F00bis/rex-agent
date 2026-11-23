@@ -46,8 +46,10 @@ func main() {
 	var tools []Tool
 
 	glob, _ := NewTool("./tools/glob.json", HandleGlob)
+	grep, _ := NewTool("./tools/grep.json", HandleGrep)
 
 	tools = append(tools, glob)
+	tools = append(tools, grep)
 
 	agent.AddTools(tools)
 
