@@ -1,0 +1,24 @@
+{
+  "type": "function",
+  "function": {
+    "name": "grep",
+    "description": "Searches file contents in the workspace using ripgrep and returns matching lines as workspace-relative path:line:match. Uses ripgrep's default ignore and hidden-file behavior. If results are truncated, narrow the pattern or path.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "minLength": 1,
+          "description": "A non-empty ripgrep regular expression. Matching is case-sensitive by default."
+        },
+        "path": {
+          "type": "string",
+          "default": ".",
+          "description": "A directory relative to the agent's startup directory. Defaults to '.' (the workspace root). Absolute paths, paths outside the workspace, and explicit hidden directories are not allowed."
+        }
+      },
+      "required": ["pattern"],
+      "additionalProperties": false
+    }
+  }
+}
